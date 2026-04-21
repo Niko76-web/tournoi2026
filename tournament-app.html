@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tournoi Handball Forges-les-Eaux</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .score-pulse { animation: pulse 0.5s ease-in-out; }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // Utilitaires de calcul du tournoi
+        const TournamentCalculator = {
+            calculateMatchDuration(numTeams, startTime = "09:30", endTime = "17:00") {
+                const start = this.timeToMinutes(startTime);
+                const end = this.timeToMinutes(endTime);
+                const totalMinutes = end - start;
+                
+                // Poules : chaque équipe joue contre chaque autre de sa poule
+                const poolMatches = numTeams >= 6 ? 
+                    Math.ceil(numTeams / 2) * (Math.floor(numTeams / 2) - 1) + 
+                    Math.floor(numTeams / 2) * (Math.ceil(numTeams / 2) - 1) :
+                    numTeams * (numTeams - 1) / 2;
+                
+                // Réserver du temps pour phases finales si possible
+                const finalsMatches = numTeams >= 4 ? 3 : 0; // Demi + finale + petite finale
+                const totalMatches = poolMatches + finalsMatches;
+                
+                const pauseTime = 8; // minutes entre matchs
+                const totalPauseTime = (totalMatches - 1) * pauseTime;
+                const playingTime = totalMinutes - totalPauseTime - 30; // 30min de marge
+                
+                const matchDuration = Math.floor(playingTime / totalMatches);
+                
+                return {
+                    matchDuration: Math.max(10, Math.min(matchDuration, 20)), // Entre 10 et 20 min
+                    pauseDuration: pauseTime,
+                    poolMatches,
+                    finalsMatches,
+                    totalMatches
+                };
+            },
+
+            timeToMinutes(time) {
+                const [h, m] = time.split(':').map(Number);
+                return h * 60 + m;
+            },
+
+            minutesToTime(minutes) {
+                const h = Math.floor(minutes / 60);
+                const m = minutes % 60;
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            },
+
+            generateSchedule(teams, startTime = "09:30") {
+                const config = this.calculateMatchDuration(teams.length, startTime);
+                let currentTime = this.timeToMinutes(startTime);
+                const matches = [];
+                let matchId = 1;
+
+                // Séparer en poules si >6 équipes
+                const pools = this.createPools(teams);
+                
+                // Générer matchs de poules
+                pools.forEach((pool, poolIndex) => {
+                    for (let i = 0; i < pool.length; i++) {
+                        for (let j = i + 1; j < pool.length; j++) {
+                            matches.push({
+                                id: matchId++,
+                                team1: pool[i],
+                                team2: pool[j],
+                                startTime: this.minutesToTime(currentTime),
+                                duration: config.matchDuration,
+                                phase: `Poule ${String.fromCharCode(65 + poolIndex)}`,
+                                score1: null,
+                                score2: null,
+                                status: 'scheduled' // scheduled, live, finished
+                            });
+                            currentTime += config.matchDuration + config.pauseDuration;
+                        }
+                    }
+                });
+
+                return { matches, config, pools };
+            },
+
+            createPools(teams) {
+                if (teams.length <= 5) {
+                    return [teams]; // Une seule poule
+                }
+                
+                // Deux poules équilibrées
+                const pool1 = teams.filter((_, i) => i % 2 === 0);
+                const pool2 = teams.filter((_, i) => i % 2 === 1);
+                return [pool1, pool2];
+            },
+
+            calculateStandings(matches, teams) {
+                const standings = teams.map(team => ({
+                    team,
+                    played: 0,
+                    won: 0,
+                    drawn: 0,
+                    lost: 0,
+                    goalsFor: 0,
+                    goalsAgainst: 0,
+                    goalDiff: 0,
+                    points: 0
+                }));
+
+                matches.filter(m => m.status === 'finished').forEach(match => {
+                    const team1Data = standings.find(s => s.team.id === match.team1.id);
+                    const team2Data = standings.find(s => s.team.id === match.team2.id);
+
+                    team1Data.played++;
+                    team2Data.played++;
+                    team1Data.goalsFor += match.score1;
+                    team1Data.goalsAgainst += match.score2;
+                    team2Data.goalsFor += match.score2;
+                    team2Data.goalsAgainst += match.score1;
+
+                    if (match.score1 > match.score2) {
+                        team1Data.won++;
+                        team1Data.points += 2;
+                        team2Data.lost++;
+                    } else if (match.score2 > match.score1) {
+                        team2Data.won++;
+                        team2Data.points += 2;
+                        team1Data.lost++;
+                    } else {
+                        team1Data.drawn++;
+                        team2Data.drawn++;
+                        team1Data.points += 1;
+                        team2Data.points += 1;
+                    }
+
+                    team1Data.goalDiff = team1Data.goalsFor - team1Data.goalsAgainst;
+                    team2Data.goalDiff = team2Data.goalsFor - team2Data.goalsAgainst;
+                });
+
+                return standings.sort((a, b) => {
+                    if (b.points !== a.points) return b.points - a.points;
+                    if (b.goalDiff !== a.goalDiff) return b.goalDiff - a.goalDiff;
+                    return b.goalsFor - a.goalsFor;
+                });
+            }
+        };
+
+        // Hook pour localStorage avec sync
+        const useLocalStorage = (key, initialValue) => {
+            const [storedValue, setStoredValue] = useState(() => {
+                try {
+                    const item = window.localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch (error) {
+                    return initialValue;
+                }
+            });
+
+            const setValue = (value) => {
+                try {
+                    const valueToStore = value instanceof Function ? value(storedValue) : value;
+                    setStoredValue(valueToStore);
+                    window.localStorage.setItem(key, JSON.stringify(valueToStore));
+                    window.dispatchEvent(new Event('storage'));
+                } catch (error) {
+                    console.error(error);
+                }
+            };
+
+            useEffect(() => {
+                const handleStorageChange = () => {
+                    try {
+                        const item = window.localStorage.getItem(key);
+                        if (item) setStoredValue(JSON.parse(item));
+                    } catch (error) {
+                        console.error(error);
+                    }
+                };
+
+                window.addEventListener('storage', handleStorageChange);
+                return () => window.removeEventListener('storage', handleStorageChange);
+            }, [key]);
+
+            return [storedValue, setValue];
+        };
+
+        // Composant Admin
+        const AdminPanel = ({ teams, setTeams, matches, setMatches, config, setConfig }) => {
+            const [pin, setPin] = useState('');
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [newTeamName, setNewTeamName] = useState('');
+            const [newTeamCategory, setNewTeamCategory] = useState('U11');
+            const [tournamentStarted, setTournamentStarted] = useState(false);
+
+            const correctPin = '2025'; // Change selon tes besoins
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                if (pin === correctPin) {
+                    setIsAuthenticated(true);
+                } else {
+                    alert('Code PIN incorrect');
+                }
+            };
+
+            const addTeam = () => {
+                if (!newTeamName.trim()) return;
+                const newTeam = {
+                    id: Date.now(),
+                    name: newTeamName,
+                    category: newTeamCategory,
+                    logo: null
+                };
+                setTeams([...teams, newTeam]);
+                setNewTeamName('');
+            };
+
+            const removeTeam = (id) => {
+                setTeams(teams.filter(t => t.id !== id));
+            };
+
+            const startTournament = () => {
+                if (teams.length < 3) {
+                    alert('Il faut au moins 3 équipes pour démarrer le tournoi');
+                    return;
+                }
+                const schedule = TournamentCalculator.generateSchedule(teams);
+                setMatches(schedule.matches);
+                setConfig(schedule.config);
+                setTournamentStarted(true);
+            };
+
+            const updateMatchScore = (matchId, team, score) => {
+                setMatches(matches.map(m => 
+                    m.id === matchId 
+                        ? { ...m, [team === 1 ? 'score1' : 'score2']: parseInt(score) || 0 }
+                        : m
+                ));
+            };
+
+            const updateMatchStatus = (matchId, status) => {
+                setMatches(matches.map(m => 
+                    m.id === matchId ? { ...m, status } : m
+                ));
+            };
+
+            if (!isAuthenticated) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+                        <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
+                            <div className="text-center mb-6">
+                                <div className="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                    </svg>
+                                </div>
+                                <h2 className="text-2xl font-bold text-gray-800">Administration</h2>
+                                <p className="text-gray-500 mt-2">Code PIN requis</p>
+                            </div>
+                            <form onSubmit={handleLogin}>
+                                <input
+                                    type="password"
+                                    value={pin}
+                                    onChange={(e) => setPin(e.target.value)}
+                                    placeholder="Entrez le code PIN"
+                                    className="w-full px-4 py-3 text-center text-2xl tracking-widest border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition-all"
+                                    maxLength="4"
+                                />
+                                <button
+                                    type="submit"
+                                    className="w-full mt-4 bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors"
+                                >
+                                    Accéder
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gray-50 p-4">
+                    <div className="max-w-6xl mx-auto">
+                        <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
+                            <div className="flex items-center justify-between mb-6">
+                                <h1 className="text-3xl font-bold text-gray-800">🏐 Administration Tournoi</h1>
+                                <button
+                                    onClick={() => setIsAuthenticated(false)}
+                                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                                >
+                                    Déconnexion
+                                </button>
+                            </div>
+
+                            {!tournamentStarted ? (
+                                <div className="space-y-6">
+                                    <div>
+                                        <h2 className="text-xl font-semibold mb-4">Gestion des équipes</h2>
+                                        <div className="flex gap-3 mb-4">
+                                            <input
+                                                type="text"
+                                                value={newTeamName}
+                                                onChange={(e) => setNewTeamName(e.target.value)}
+                                                placeholder="Nom de l'équipe"
+                                                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                                            />
+                                            <select
+                                                value={newTeamCategory}
+                                                onChange={(e) => setNewTeamCategory(e.target.value)}
+                                                className="px-4 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                                            >
+                                                <option value="U11">U11</option>
+                                                <option value="U13">U13</option>
+                                                <option value="U15">U15</option>
+                                            </select>
+                                            <button
+                                                onClick={addTeam}
+                                                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                                            >
+                                                Ajouter
+                                            </button>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            {teams.map(team => (
+                                                <div key={team.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                                                    <div>
+                                                        <div className="font-semibold text-gray-800">{team.name}</div>
+                                                        <div className="text-sm text-gray-500">{team.category}</div>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => removeTeam(team.id)}
+                                                        className="text-red-600 hover:text-red-700"
+                                                    >
+                                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={startTournament}
+                                        disabled={teams.length < 3}
+                                        className="w-full py-4 bg-green-600 text-white rounded-xl font-bold text-lg hover:bg-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                    >
+                                        🚀 Lancer le tournoi ({teams.length} équipes)
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-6">
+                                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                        <div className="flex justify-between items-center">
+                                            <div>
+                                                <div className="text-sm text-blue-600 font-medium">Configuration</div>
+                                                <div className="text-lg font-bold text-blue-900">
+                                                    {matches.length} matchs • {config.matchDuration}min par match
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    if (confirm('Réinitialiser le tournoi ?')) {
+                                                        setMatches([]);
+                                                        setTournamentStarted(false);
+                                                    }
+                                                }}
+                                                className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+                                            >
+                                                Réinitialiser
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <h2 className="text-xl font-semibold mb-4">Matchs</h2>
+                                        <div className="space-y-3">
+                                            {matches.map(match => (
+                                                <div key={match.id} className="bg-white border-2 border-gray-200 rounded-xl p-4">
+                                                    <div className="flex items-center justify-between mb-3">
+                                                        <div className="text-sm font-medium text-gray-500">
+                                                            {match.phase} • {match.startTime} • Match {match.id}
+                                                        </div>
+                                                        <select
+                                                            value={match.status}
+                                                            onChange={(e) => updateMatchStatus(match.id, e.target.value)}
+                                                            className="px-3 py-1 border border-gray-300 rounded-lg text-sm"
+                                                        >
+                                                            <option value="scheduled">Programmé</option>
+                                                            <option value="live">En cours</option>
+                                                            <option value="finished">Terminé</option>
+                                                        </select>
+                                                    </div>
+
+                                                    <div className="flex items-center justify-between gap-4">
+                                                        <div className="flex-1 text-right">
+                                                            <div className="font-semibold text-gray-800">{match.team1.name}</div>
+                                                            <div className="text-xs text-gray-500">{match.team1.category}</div>
+                                                        </div>
+
+                                                        <div className="flex items-center gap-3">
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                value={match.score1 ?? ''}
+                                                                onChange={(e) => updateMatchScore(match.id, 1, e.target.value)}
+                                                                disabled={match.status === 'scheduled'}
+                                                                className="w-16 h-12 text-center text-xl font-bold border-2 border-gray-300 rounded-lg disabled:bg-gray-100"
+                                                            />
+                                                            <span className="text-2xl font-bold text-gray-400">-</span>
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                value={match.score2 ?? ''}
+                                                                onChange={(e) => updateMatchScore(match.id, 2, e.target.value)}
+                                                                disabled={match.status === 'scheduled'}
+                                                                className="w-16 h-12 text-center text-xl font-bold border-2 border-gray-300 rounded-lg disabled:bg-gray-100"
+                                                            />
+                                                        </div>
+
+                                                        <div className="flex-1">
+                                                            <div className="font-semibold text-gray-800">{match.team2.name}</div>
+                                                            <div className="text-xs text-gray-500">{match.team2.category}</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Composant Public Mobile
+        const PublicView = ({ teams, matches, config }) => {
+            const [activeTab, setActiveTab] = useState('live');
+            const standings = useMemo(() => 
+                TournamentCalculator.calculateStandings(matches, teams), 
+                [matches, teams]
+            );
+
+            const liveMatch = matches.find(m => m.status === 'live');
+            const upcomingMatches = matches.filter(m => m.status === 'scheduled').slice(0, 3);
+            const finishedMatches = matches.filter(m => m.status === 'finished');
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-blue-50">
+                    <div className="bg-gradient-to-r from-indigo-600 to-blue-600 text-white p-6 shadow-lg">
+                        <h1 className="text-2xl font-bold">🏐 Tournoi Handball</h1>
+                        <p className="text-indigo-100 text-sm mt-1">Forges-les-Eaux 2025</p>
+                    </div>
+
+                    <div className="flex border-b border-gray-200 bg-white sticky top-0 shadow-sm">
+                        {['live', 'classement', 'resultats'].map(tab => (
+                            <button
+                                key={tab}
+                                onClick={() => setActiveTab(tab)}
+                                className={`flex-1 py-3 font-semibold transition-all ${
+                                    activeTab === tab
+                                        ? 'text-indigo-600 border-b-2 border-indigo-600'
+                                        : 'text-gray-500'
+                                }`}
+                            >
+                                {tab === 'live' && '🔴 Live'}
+                                {tab === 'classement' && '🏆 Classement'}
+                                {tab === 'resultats' && '📋 Résultats'}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="p-4">
+                        {activeTab === 'live' && (
+                            <div className="space-y-4">
+                                {liveMatch ? (
+                                    <div className="bg-white rounded-2xl shadow-lg p-6 border-2 border-green-500">
+                                        <div className="flex items-center justify-center mb-4">
+                                            <span className="px-3 py-1 bg-red-500 text-white text-sm font-bold rounded-full flex items-center gap-2">
+                                                <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+                                                EN DIRECT
+                                            </span>
+                                        </div>
+
+                                        <div className="flex items-center justify-between mb-6">
+                                            <div className="text-center flex-1">
+                                                <div className="text-xl font-bold text-gray-800">{liveMatch.team1.name}</div>
+                                                <div className="text-xs text-gray-500">{liveMatch.team1.category}</div>
+                                            </div>
+
+                                            <div className="flex items-center gap-4">
+                                                <div className="text-5xl font-bold text-indigo-600">{liveMatch.score1 ?? 0}</div>
+                                                <div className="text-3xl font-bold text-gray-400">-</div>
+                                                <div className="text-5xl font-bold text-indigo-600">{liveMatch.score2 ?? 0}</div>
+                                            </div>
+
+                                            <div className="text-center flex-1">
+                                                <div className="text-xl font-bold text-gray-800">{liveMatch.team2.name}</div>
+                                                <div className="text-xs text-gray-500">{liveMatch.team2.category}</div>
+                                            </div>
+                                        </div>
+
+                                        <div className="text-center text-sm text-gray-500">
+                                            {liveMatch.phase} • Début: {liveMatch.startTime}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="bg-white rounded-2xl shadow-lg p-8 text-center">
+                                        <div className="text-gray-400 text-lg">Aucun match en cours</div>
+                                    </div>
+                                )}
+
+                                <div>
+                                    <h3 className="text-lg font-bold text-gray-800 mb-3">À venir</h3>
+                                    {upcomingMatches.map(match => (
+                                        <div key={match.id} className="bg-white rounded-xl shadow p-4 mb-3">
+                                            <div className="text-xs text-gray-500 mb-2">{match.startTime} • {match.phase}</div>
+                                            <div className="flex items-center justify-between">
+                                                <div className="font-semibold text-gray-800">{match.team1.name}</div>
+                                                <div className="text-gray-400 font-bold">vs</div>
+                                                <div className="font-semibold text-gray-800">{match.team2.name}</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'classement' && (
+                            <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+                                <table className="w-full">
+                                    <thead className="bg-gradient-to-r from-indigo-600 to-blue-600 text-white">
+                                        <tr>
+                                            <th className="py-3 px-4 text-left text-sm font-semibold">#</th>
+                                            <th className="py-3 px-4 text-left text-sm font-semibold">Équipe</th>
+                                            <th className="py-3 px-2 text-center text-sm font-semibold">Pts</th>
+                                            <th className="py-3 px-2 text-center text-sm font-semibold">J</th>
+                                            <th className="py-3 px-2 text-center text-sm font-semibold">+/-</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {standings.map((standing, index) => (
+                                            <tr key={standing.team.id} className={`border-b ${index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}`}>
+                                                <td className="py-3 px-4">
+                                                    <span className={`font-bold ${index < 2 ? 'text-yellow-600' : 'text-gray-600'}`}>
+                                                        {index + 1}
+                                                    </span>
+                                                </td>
+                                                <td className="py-3 px-4">
+                                                    <div className="font-semibold text-gray-800">{standing.team.name}</div>
+                                                    <div className="text-xs text-gray-500">{standing.team.category}</div>
+                                                </td>
+                                                <td className="py-3 px-2 text-center font-bold text-indigo-600">{standing.points}</td>
+                                                <td className="py-3 px-2 text-center text-gray-600">{standing.played}</td>
+                                                <td className="py-3 px-2 text-center">
+                                                    <span className={standing.goalDiff > 0 ? 'text-green-600 font-semibold' : standing.goalDiff < 0 ? 'text-red-600 font-semibold' : 'text-gray-600'}>
+                                                        {standing.goalDiff > 0 ? '+' : ''}{standing.goalDiff}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        {activeTab === 'resultats' && (
+                            <div className="space-y-3">
+                                {finishedMatches.reverse().map(match => (
+                                    <div key={match.id} className="bg-white rounded-xl shadow p-4">
+                                        <div className="text-xs text-gray-500 mb-2">{match.phase}</div>
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex-1">
+                                                <div className="font-semibold text-gray-800">{match.team1.name}</div>
+                                            </div>
+                                            <div className="flex items-center gap-3 mx-4">
+                                                <div className={`text-2xl font-bold ${match.score1 > match.score2 ? 'text-green-600' : match.score1 < match.score2 ? 'text-gray-400' : 'text-gray-600'}`}>
+                                                    {match.score1}
+                                                </div>
+                                                <div className="text-gray-400">-</div>
+                                                <div className={`text-2xl font-bold ${match.score2 > match.score1 ? 'text-green-600' : match.score2 < match.score1 ? 'text-gray-400' : 'text-gray-600'}`}>
+                                                    {match.score2}
+                                                </div>
+                                            </div>
+                                            <div className="flex-1 text-right">
+                                                <div className="font-semibold text-gray-800">{match.team2.name}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {finishedMatches.length === 0 && (
+                                    <div className="text-center text-gray-400 py-8">Aucun résultat pour le moment</div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Composant écran TV
+        const TVDisplay = ({ teams, matches }) => {
+            const [currentTime, setCurrentTime] = useState(new Date());
+            
+            useEffect(() => {
+                const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
+
+            const liveMatch = matches.find(m => m.status === 'live');
+            const nextMatch = matches.find(m => m.status === 'scheduled');
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-blue-900 to-indigo-900 text-white flex items-center justify-center p-8">
+                    {liveMatch ? (
+                        <div className="w-full max-w-6xl">
+                            <div className="text-center mb-8">
+                                <div className="inline-flex items-center gap-3 px-6 py-3 bg-red-600 rounded-full text-2xl font-bold">
+                                    <span className="w-4 h-4 bg-white rounded-full animate-pulse"></span>
+                                    MATCH EN DIRECT
+                                </div>
+                            </div>
+
+                            <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-12 border border-white/20">
+                                <div className="grid grid-cols-3 gap-8 items-center">
+                                    <div className="text-center">
+                                        <div className="text-5xl font-bold mb-4">{liveMatch.team1.name}</div>
+                                        <div className="text-2xl text-blue-200">{liveMatch.team1.category}</div>
+                                    </div>
+
+                                    <div className="text-center">
+                                        <div className="flex items-center justify-center gap-8 mb-4">
+                                            <div className="text-9xl font-black score-pulse">{liveMatch.score1 ?? 0}</div>
+                                            <div className="text-6xl font-bold text-white/50">-</div>
+                                            <div className="text-9xl font-black score-pulse">{liveMatch.score2 ?? 0}</div>
+                                        </div>
+                                        <div className="text-2xl text-blue-200">{liveMatch.phase}</div>
+                                    </div>
+
+                                    <div className="text-center">
+                                        <div className="text-5xl font-bold mb-4">{liveMatch.team2.name}</div>
+                                        <div className="text-2xl text-blue-200">{liveMatch.team2.category}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {nextMatch && (
+                                <div className="mt-8 text-center">
+                                    <div className="text-xl text-blue-200 mb-2">Prochain match • {nextMatch.startTime}</div>
+                                    <div className="text-3xl font-bold">
+                                        {nextMatch.team1.name} vs {nextMatch.team2.name}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <div className="text-center">
+                            <div className="text-6xl font-bold mb-8">🏐 Tournoi Handball</div>
+                            <div className="text-4xl mb-4">Forges-les-Eaux</div>
+                            <div className="text-3xl text-blue-200">{currentTime.toLocaleTimeString('fr-FR')}</div>
+                            {nextMatch && (
+                                <div className="mt-12">
+                                    <div className="text-2xl text-blue-200 mb-4">Prochain match • {nextMatch.startTime}</div>
+                                    <div className="text-4xl font-bold">
+                                        {nextMatch.team1.name} vs {nextMatch.team2.name}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // App principale
+        const App = () => {
+            const [teams, setTeams] = useLocalStorage('tournament-teams', []);
+            const [matches, setMatches] = useLocalStorage('tournament-matches', []);
+            const [config, setConfig] = useLocalStorage('tournament-config', {});
+            const [view, setView] = useState('public'); // admin, public, tv
+
+            // Auto-refresh pour le public
+            useEffect(() => {
+                if (view === 'public' || view === 'tv') {
+                    const interval = setInterval(() => {
+                        window.dispatchEvent(new Event('storage'));
+                    }, 3000);
+                    return () => clearInterval(interval);
+                }
+            }, [view]);
+
+            // Détection du mode depuis l'URL
+            useEffect(() => {
+                const params = new URLSearchParams(window.location.search);
+                const mode = params.get('mode');
+                if (mode === 'admin' || mode === 'tv') setView(mode);
+            }, []);
+
+            return (
+                <>
+                    {view === 'admin' && (
+                        <AdminPanel 
+                            teams={teams} 
+                            setTeams={setTeams}
+                            matches={matches}
+                            setMatches={setMatches}
+                            config={config}
+                            setConfig={setConfig}
+                        />
+                    )}
+                    {view === 'public' && (
+                        <PublicView teams={teams} matches={matches} config={config} />
+                    )}
+                    {view === 'tv' && (
+                        <TVDisplay teams={teams} matches={matches} />
+                    )}
+
+                    {/* Bouton flottant pour changer de vue (dev uniquement) */}
+                    <div className="fixed bottom-4 right-4 flex gap-2">
+                        <button
+                            onClick={() => setView('public')}
+                            className="w-12 h-12 bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700 transition-all"
+                            title="Vue Public"
+                        >
+                            📱
+                        </button>
+                        <button
+                            onClick={() => setView('tv')}
+                            className="w-12 h-12 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-all"
+                            title="Vue TV"
+                        >
+                            📺
+                        </button>
+                        <button
+                            onClick={() => setView('admin')}
+                            className="w-12 h-12 bg-gray-800 text-white rounded-full shadow-lg hover:bg-gray-900 transition-all"
+                            title="Administration"
+                        >
+                            ⚙️
+                        </button>
+                    </div>
+                </>
+            );
+        };
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
