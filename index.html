@@ -74,46 +74,46 @@
             },
 
             generateSchedule(teams, startTime = "09:30") {
+                // Grouper les équipes par catégorie
+                const teamsByCategory = {
+                    'U11': teams.filter(t => t.category === 'U11'),
+                    'U13': teams.filter(t => t.category === 'U13'),
+                    'U15': teams.filter(t => t.category === 'U15')
+                };
+
                 const config = this.calculateMatchDuration(teams.length, startTime);
                 let currentTime = this.timeToMinutes(startTime);
                 const matches = [];
                 let matchId = 1;
 
-                // Séparer en poules si >6 équipes
-                const pools = this.createPools(teams);
-                
-                // Générer matchs de poules
-                pools.forEach((pool, poolIndex) => {
-                    for (let i = 0; i < pool.length; i++) {
-                        for (let j = i + 1; j < pool.length; j++) {
+                // Générer les matchs pour chaque catégorie
+                ['U11', 'U13', 'U15'].forEach(category => {
+                    const categoryTeams = teamsByCategory[category];
+                    if (categoryTeams.length < 2) return; // Pas assez d'équipes
+
+                    // Tous contre tous dans la catégorie
+                    for (let i = 0; i < categoryTeams.length; i++) {
+                        for (let j = i + 1; j < categoryTeams.length; j++) {
+                            // Arrondir l'heure au multiple de 5 minutes supérieur
+                            currentTime = Math.ceil(currentTime / 5) * 5;
+                            
                             matches.push({
                                 id: matchId++,
-                                team1: pool[i],
-                                team2: pool[j],
+                                team1: categoryTeams[i],
+                                team2: categoryTeams[j],
                                 startTime: this.minutesToTime(currentTime),
                                 duration: config.matchDuration,
-                                phase: `Poule ${String.fromCharCode(65 + poolIndex)}`,
+                                phase: `Poule ${category}`,
                                 score1: null,
                                 score2: null,
-                                status: 'scheduled' // scheduled, live, finished
+                                status: 'scheduled'
                             });
                             currentTime += config.matchDuration + config.pauseDuration;
                         }
                     }
                 });
 
-                return { matches, config, pools };
-            },
-
-            createPools(teams) {
-                if (teams.length <= 5) {
-                    return [teams]; // Une seule poule
-                }
-                
-                // Deux poules équilibrées
-                const pool1 = teams.filter((_, i) => i % 2 === 0);
-                const pool2 = teams.filter((_, i) => i % 2 === 1);
-                return [pool1, pool2];
+                return { matches, config, pools: [] };
             },
 
             calculateStandings(matches, teams) {
